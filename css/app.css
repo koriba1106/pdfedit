@@ -36,11 +36,21 @@
       user-select: text;
     }
 
+    /* Pinpoint whiteout mask over original rasterized PDF text */
+    .pdf-text-mask {
+      position: absolute;
+      background-color: #ffffff;
+      pointer-events: none;
+      user-select: none;
+      z-index: 12;
+      border-radius: 1px;
+    }
+
     /* Editable Text & Elements */
     .editable-item {
       position: absolute;
       outline: none;
-      line-height: 1.25;
+      line-height: 1.35;
       min-width: 16px;
       min-height: 16px;
       cursor: text;
@@ -50,28 +60,55 @@
       margin: -1px -3px;
       z-index: 20;
       word-break: break-word;
+      white-space: pre-wrap;
+    }
+    .editable-content {
+      outline: none;
+      min-height: 1em;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .editable-item.unified-doc-block {
+      background-color: transparent !important;
+      z-index: 20;
+      padding: 4px 6px;
+      margin: 0;
+    }
+    .editable-item.unified-doc-block.masked-bg .doc-line-text {
+      background-color: rgba(255, 255, 255, 0.88);
+      border-radius: 2px;
+      padding: 0 2px;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+    }
+    .doc-line {
+      min-height: 1.25em;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
     .show-guides .editable-item {
       outline: 1px dashed rgba(59, 130, 246, 0.45);
     }
     .editable-item:hover {
       outline: 1px solid #3b82f6 !important;
-      background-color: rgba(239, 246, 255, 0.4);
+      background-color: rgba(239, 246, 255, 0.25);
     }
-    .editable-item:focus, .editable-item.active-element {
+    .editable-item:focus,
+    .editable-item:focus-within,
+    .editable-item.active-element {
       outline: 2px solid #2563eb !important;
-      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.18);
-      z-index: 40 !important;
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.14);
+      z-index: 30 !important;
     }
-    /* When an original PDF text item is edited or in exact mask mode, mask the underlying canvas text */
-    .editable-item.masked-bg {
+    /* When an individual PDF text item is in exact mask mode, mask the underlying canvas text */
+    .editable-item.masked-bg:not(.unified-doc-block) {
       background-color: #ffffff;
     }
 
     /* Reconstructed & Custom Editable Tables */
     .editable-table-wrapper {
       position: absolute;
-      z-index: 25;
+      z-index: 35;
       background-color: #ffffff;
       transition: box-shadow 0.15s;
     }
@@ -81,7 +118,7 @@
     .editable-table-wrapper:hover, .editable-table-wrapper.active-element {
       outline: 2px solid #10b981;
       box-shadow: 0 6px 16px rgba(16, 185, 129, 0.15);
-      z-index: 40;
+      z-index: 45;
     }
     .editable-table {
       width: 100%;
@@ -97,6 +134,7 @@
       font-size: 13px;
       color: #0f172a;
       word-break: break-word;
+      white-space: pre-wrap;
     }
     .editable-table td:focus, .editable-table th:focus {
       background-color: #f0fdf4;
@@ -119,13 +157,14 @@
       gap: 4px;
       white-space: nowrap;
       user-select: none;
-      z-index: 50;
+      z-index: 55;
     }
     .editable-table-wrapper .drag-handle {
       background: #059669;
     }
     .editable-item:hover .drag-handle,
     .editable-item:focus .drag-handle,
+    .editable-item:focus-within .drag-handle,
     .editable-item.active-element .drag-handle,
     .editable-table-wrapper:hover .drag-handle,
     .editable-table-wrapper.active-element .drag-handle,
@@ -137,12 +176,13 @@
     /* Floating Widgets (Stamps, Shapes, Images) */
     .floating-widget {
       position: absolute;
-      z-index: 30;
+      z-index: 42;
       cursor: move;
       user-select: none;
     }
     .floating-widget.active-element {
       outline: 2px solid #2563eb;
+      z-index: 48;
     }
 
     /* Hanko / Japanese Stamp Style */
@@ -254,4 +294,3 @@ button, select, input {
     transition-duration: 0.01ms !important;
   }
 }
-

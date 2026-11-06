@@ -1,7 +1,7 @@
 // Configure optional external libraries. The PDF workflow is unavailable if PDF.js fails to load.
     const pdfLibraryAvailable = typeof pdfjsLib !== 'undefined';
     if (pdfLibraryAvailable) {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      pdfjsLib.GlobalWorkerOptions.workerSrc = '[https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js](https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js)';
     }
     if (typeof lucide !== 'undefined') lucide.createIcons();
 
@@ -17,10 +17,12 @@
     const appState = {
       pdfDoc: null,
       pagesData: [], // Stores extracted raw items and background canvas data per page
-      editMode: 'hybrid', // 'hybrid' (Smart Paragraph & Table Reconstruction) or 'exact' (Strict block-by-block overlay)
+      editMode: 'hybrid', // 'hybrid' (Unified Full-Document & Table Reconstruction) or 'exact' (Strict block-by-block overlay)
       zoom: 1.0,
       bgOpacity: 1.0,
       selectedElement: null,
+      activeEditableTarget: null,
+      savedRange: null, // Preserves text selection range when interacting with toolbar inputs/selects
       activePageIndex: 0
     };
 
@@ -43,6 +45,286 @@
         indicator.className = `w-2 h-2 rounded-full ${isLoading ? 'bg-amber-400 animate-ping' : 'bg-emerald-400'}`;
       }
       if (label) label.textContent = String(text);
+    }
+
+    // =========================================================================
+    // 0. RICH-TEXT SELECTION TRACKING & PARTIAL STYLING ENGINE
+    //    Allows Word-like partial font family, partial font size, bold, italic,
+    //    underline, color, and background changes on any selected substring!
+    // =========================================================================
+    function isNodeInsideEditable(node) {
+      if (!node) return null;
+      const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+      if (!el) return null;
+      if (el.closest('.drag-handle')) return null;
+      return el.closest('.editable-content, .editable-table td, .editable-table th, .hanko-stamp, .editable-item');
+    }
+
+    function saveCurrentSelectionRange() {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) return;
+      const range = sel.getRangeAt(0);
+      const startContainerEl = isNodeInsideEditable(range.startContainer);
+      const endContainerEl = isNodeInsideEditable(range.endContainer);
+      if (startContainerEl && endContainerEl && startContainerEl === endContainerEl) {
+        appState.savedRange = range.cloneRange();
+        appState.activeEditableTarget = startContainerEl;
+        const ownerItem = startContainerEl.closest('.editable-item, .editable-table-wrapper, .floating-widget');
+        if (ownerItem && appState.selectedElement !== ownerItem) {
+          selectElement(ownerItem);
+        }
+        syncToolbarWithSelection(range);
+      }
+    }
+
+    document.addEventListener('selectionchange', () => {
+      const activeEl = document.activeElement;
+      // Do not overwrite savedRange while the user is interacting with toolbar inputs/selects
+      if (activeEl && (activeEl.closest('.app-toolbar') || activeEl.closest('#propertyPanel'))) {
+        return;
+      }
+      saveCurrentSelectionRange();
+    });
+
+    function rgbToHex(colorStr) {
+      if (!colorStr) return '#0f172a';
+      if (colorStr.startsWith('#')) {
+        if (colorStr.length === 4) {
+          return '#' + colorStr[1] + colorStr[1] + colorStr[2] + colorStr[2] + colorStr[3] + colorStr[3];
+        }
+        return colorStr.slice(0, 7);
+      }
+      const m = colorStr.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+      if (!m) return '#0f172a';
+      const r = Math.min(255, parseInt(m[1], 10)).toString(16).padStart(2, '0');
+      const g = Math.min(255, parseInt(m[2], 10)).toString(16).padStart(2, '0');
+      const b = Math.min(255, parseInt(m[3], 10)).toString(16).padStart(2, '0');
+      return `#${r}${g}${b}`;
+    }
+
+    function syncToolbarWithSelection(range) {
+      if (!range) return;
+      let targetNode = range.startContainer;
+      if (targetNode.nodeType === Node.TEXT_NODE) {
+        targetNode = targetNode.parentElement;
+      }
+      if (!targetNode || !(targetNode instanceof HTMLElement)) return;
+
+      const computed = window.getComputedStyle(targetNode);
+      const fontSizeInput = document.getElementById('fontSizeInput');
+      if (fontSizeInput && document.activeElement !== fontSizeInput) {
+        const px = Math.round(parseFloat(computed.fontSize) || 14);
+        fontSizeInput.value = px;
+      }
+
+      const fontFamilySelect = document.getElementById('fontFamilySelect');
+      if (fontFamilySelect && document.activeElement !== fontFamilySelect) {
+        const fam = computed.fontFamily || '';
+        for (const opt of fontFamilySelect.options) {
+          const cleanOpt = opt.value.replace(/['"]/g, '').split(',')[0].trim().toLowerCase();
+          if (cleanOpt && fam.toLowerCase().includes(cleanOpt)) {
+            fontFamilySelect.value = opt.value;
+            break;
+          }
+        }
+      }
+
+      const textColorPicker = document.getElementById('textColorPicker');
+      if (textColorPicker && document.activeElement !== textColorPicker) {
+        textColorPicker.value = rgbToHex(computed.color);
+      }
+    }
+
+    function getActiveRangeForStyling() {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0) {
+        const liveRange = sel.getRangeAt(0);
+        const container = isNodeInsideEditable(liveRange.startContainer);
+        if (container && !liveRange.collapsed) {
+          appState.savedRange = liveRange.cloneRange();
+          appState.activeEditableTarget = container;
+          return liveRange;
+        }
+      }
+      if (appState.savedRange && !appState.savedRange.collapsed) {
+        const container = isNodeInsideEditable(appState.savedRange.startContainer);
+        if (container && document.body.contains(container)) {
+          return appState.savedRange.cloneRange();
+        }
+      }
+      return null;
+    }
+
+    function restoreSelectionRange(range) {
+      if (!range) return;
+      appState.savedRange = range.cloneRange();
+      const sel = window.getSelection();
+      if (sel) {
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    }
+
+    // Collect text nodes intersecting the given range, splitting boundary text nodes cleanly
+    function splitAndCollectTextNodesInRange(range) {
+      if (range.collapsed) return [];
+
+      // Split end boundary first so start offsets remain valid
+      if (range.endContainer.nodeType === Node.TEXT_NODE) {
+        const endText = range.endContainer;
+        if (range.endOffset > 0 && range.endOffset < endText.nodeValue.length) {
+          endText.splitText(range.endOffset);
+        }
+      }
+      if (range.startContainer.nodeType === Node.TEXT_NODE) {
+        const startText = range.startContainer;
+        if (range.startOffset > 0 && range.startOffset < startText.nodeValue.length) {
+          const afterNode = startText.splitText(range.startOffset);
+          if (range.endContainer === startText) {
+            range.setEnd(afterNode, range.endOffset - range.startOffset);
+          }
+          range.setStart(afterNode, 0);
+        }
+      }
+
+      const root = range.commonAncestorContainer;
+      if (root.nodeType === Node.TEXT_NODE) {
+        return root.nodeValue.length > 0 ? [root] : [];
+      }
+
+      const textNodes = [];
+      const walker = document.createTreeWalker(
+        root,
+        NodeFilter.SHOW_TEXT,
+        {
+          acceptNode(node) {
+            if (!node.nodeValue || node.nodeValue.length === 0) return NodeFilter.FILTER_REJECT;
+            if (node.parentElement && node.parentElement.closest('.drag-handle')) {
+              return NodeFilter.FILTER_REJECT;
+            }
+            return range.intersectsNode(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+          }
+        }
+      );
+
+      let current;
+      while ((current = walker.nextNode())) {
+        textNodes.push(current);
+      }
+      return textNodes;
+    }
+
+    function cleanupEmptyAndRedundantSpans(rootEl) {
+      if (!rootEl) return;
+      const spans = Array.from(rootEl.querySelectorAll('span.rt-styled'));
+      for (const span of spans) {
+        if (!span.textContent && span.children.length === 0) {
+          span.remove();
+          continue;
+        }
+        // If a styled span has only a single child which is also an rt-styled span with no sibling text, merge styles
+        if (
+          span.childNodes.length === 1 &&
+          span.firstChild.nodeType === Node.ELEMENT_NODE &&
+          span.firstChild.tagName === 'SPAN' &&
+          span.firstChild.classList.contains('rt-styled')
+        ) {
+          const child = span.firstChild;
+          const mergedCss = `${span.style.cssText}; ${child.style.cssText}`;
+          span.style.cssText = mergedCss;
+          while (child.firstChild) {
+            span.insertBefore(child.firstChild, child);
+          }
+          child.remove();
+        }
+      }
+    }
+
+    // Apply CSS style property to ONLY the selected substring (or fallback to current line / active element)
+    function applyStyleToSelectionOrElement(styleProp, styleValue, toggleCheckFn = null) {
+      const range = getActiveRangeForStyling();
+      if (range && !range.collapsed) {
+        const container = isNodeInsideEditable(range.commonAncestorContainer) || appState.selectedElement;
+        const textNodes = splitAndCollectTextNodesInRange(range);
+
+        if (textNodes.length > 0) {
+          let finalValue = styleValue;
+          if (typeof toggleCheckFn === 'function') {
+            const firstParent = textNodes[0].parentElement || container;
+            const computed = window.getComputedStyle(firstParent);
+            finalValue = toggleCheckFn(computed);
+          }
+
+          const wrappedNodes = [];
+          for (const textNode of textNodes) {
+            const parent = textNode.parentElement;
+            if (
+              parent &&
+              parent.tagName === 'SPAN' &&
+              parent.classList.contains('rt-styled') &&
+              parent.childNodes.length === 1
+            ) {
+              parent.style[styleProp] = finalValue;
+              // Clear conflicting descendant style on this property if any
+              parent.querySelectorAll('span').forEach(s => { s.style[styleProp] = ''; });
+              wrappedNodes.push(textNode);
+            } else {
+              const span = document.createElement('span');
+              span.className = 'rt-styled';
+              span.style[styleProp] = finalValue;
+              textNode.parentNode.insertBefore(span, textNode);
+              span.appendChild(textNode);
+              wrappedNodes.push(textNode);
+            }
+          }
+
+          if (container) cleanupEmptyAndRedundantSpans(container);
+
+          // Re-select the exact styled text range so the user can continue changing size/font/color
+          const newRange = document.createRange();
+          newRange.setStart(wrappedNodes[0], 0);
+          const lastText = wrappedNodes[wrappedNodes.length - 1];
+          newRange.setEnd(lastText, lastText.nodeValue.length);
+          appState.savedRange = newRange.cloneRange();
+
+          const activeEl = document.activeElement;
+          // Restore visual selection immediately if user is not typing inside a number/text input
+          if (!activeEl || (activeEl.tagName !== 'INPUT' && activeEl.tagName !== 'SELECT')) {
+            restoreSelectionRange(newRange);
+          }
+          return;
+        }
+      }
+
+      // Fallback when no partial substring is selected:
+      // If caret is inside a specific table cell or a specific .doc-line inside unified document, style that target;
+      // otherwise style the selected element container.
+      const sel = window.getSelection();
+      let caretLineOrCell = null;
+      if (sel && sel.rangeCount > 0 && sel.getRangeAt(0).collapsed) {
+        const node = sel.getRangeAt(0).startContainer;
+        const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+        if (el) {
+          caretLineOrCell = el.closest('.editable-table td, .editable-table th, .doc-line');
+        }
+      }
+      if (!caretLineOrCell && appState.savedRange && appState.savedRange.collapsed) {
+        const node = appState.savedRange.startContainer;
+        const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+        if (el && document.body.contains(el)) {
+          caretLineOrCell = el.closest('.editable-table td, .editable-table th, .doc-line');
+        }
+      }
+
+      const targetEl = caretLineOrCell || appState.selectedElement;
+      if (!targetEl) return;
+
+      let finalValue = styleValue;
+      if (typeof toggleCheckFn === 'function') {
+        const computed = window.getComputedStyle(targetEl);
+        finalValue = toggleCheckFn(computed);
+      }
+      targetEl.style[styleProp] = finalValue;
     }
 
     // =========================================================================
@@ -155,7 +437,7 @@
 
         // Meta Specs above table
         { text: '件名：WebベースPDF直接編集システム構築および導入支援', x: 60, y: 345, w: 450, h: 22, fontSize: 14, fontWeight: '700', color: '#0f172a' },
-        { text: '納期：ご発注後 約3週間　／　お支払条件：検収月末締め翌月末現金振込　／　有効期限：発行日より30日間', x: 60, y: 370, w: 660, h: 20, fontSize: 12, fontWeight: '400', color: '#475569' },
+        { text: '納期：ご発注後 約3週間 ／ お支払条件：検収月末締め翌月末現金振込 ／ 有効期限：発行日より30日間', x: 60, y: 370, w: 660, h: 20, fontSize: 12, fontWeight: '400', color: '#475569' },
 
         // Table Grid Items (Automatically detected as a structured table in Smart Reconstruction Mode!)
         // Row 0 (Header)
@@ -208,8 +490,8 @@
 
         // Notes / Remarks Section
         { text: '【備考・特記事項】', x: 75, y: 805, w: 240, h: 22, fontSize: 14, fontWeight: '700', color: '#1e293b' },
-        { text: '1. 本サンプルはブラウザ上で直接編集可能です。文字をクリックして金額や宛名を書き換えてみてください。', x: 75, y: 835, w: 630, h: 20, fontSize: 13, fontWeight: '400', color: '#334155' },
-        { text: '2. 上記の明細表は自動的にHTMLの表（<table>）として再構築されています。セル内の編集や行・列の追加が可能です。', x: 75, y: 862, w: 630, h: 20, fontSize: 13, fontWeight: '400', color: '#334155' },
+        { text: '1. 本サンプルは全体を1つの文章としてWordのように自由な改行や行結合、部分的なフォント・サイズ変更が可能です。', x: 75, y: 835, w: 630, h: 20, fontSize: 13, fontWeight: '400', color: '#334155' },
+        { text: '2. 文字をドラッグで部分選択し、上部ツールバーからその部分だけのフォントやサイズ・色を変更してみてください。', x: 75, y: 862, w: 630, h: 20, fontSize: 13, fontWeight: '400', color: '#334155' },
         { text: '3. お手元のPDFファイルを画面にドラッグ＆ドロップすると、同様にレイアウトを保持して直接編集できます。', x: 75, y: 889, w: 630, h: 20, fontSize: 13, fontWeight: '400', color: '#334155' },
         { text: '4. 編集後は右上の「PDFとして保存」または「Word (.doc) 出力」からいつでもダウンロードできます。', x: 75, y: 916, w: 630, h: 20, fontSize: 13, fontWeight: '400', color: '#334155' }
       ];
@@ -222,11 +504,12 @@
         height: pageHeight,
         bgDataUrl: bgDataUrl,
         rawItems: rawItems,
+        needsRasterMask: false,
         hasSampleStamp: true
       }];
 
       renderAllPages();
-      setStatus('サンプル御見積書を読み込みました — 任意の文字や表のセルをクリックして直接編集できます');
+      setStatus('サンプル御見積書を読み込みました — 全文を1つの文章として自由な改行や部分フォント・部分サイズ変更が可能です');
     }
 
     // =========================================================================
@@ -325,6 +608,7 @@
               height: Math.round(viewport.height),
               bgDataUrl,
               rawItems,
+              needsRasterMask: true,
               hasSampleStamp: false
             });
           } finally {
@@ -352,7 +636,7 @@
         if (previousPdf) {
           try { await previousPdf.destroy(); } catch (error) { console.warn('Previous PDF cleanup:', error); }
         }
-        setStatus(`「${file.name}」(${appState.pagesData.length}ページ) の再構築が完了しました。直接編集できます。`);
+        setStatus(`「${file.name}」(${appState.pagesData.length}ページ) の再構築が完了しました。全文を1つの文章として直接編集できます。`);
       } catch (err) {
         console.error('PDF Load Error:', err);
         setStatus(err && err.message ? err.message : 'PDFの読み込み中にエラーが発生しました。');
@@ -364,18 +648,22 @@
     }
 
     // =========================================================================
-    // 3. SMART LAYOUT RECONSTRUCTION ENGINE (Table & Line Grouping Algorithm)
+    // 3. SMART LAYOUT RECONSTRUCTION ENGINE
+    //    In 'hybrid' mode: Combines all non-table text into a single unified
+    //    Word-like multi-line document block while preserving per-fragment
+    //    font size, weight, color, and horizontal/vertical spacing!
     // =========================================================================
-    function analyzeAndReconstructLayout(rawItems) {
+    function analyzeAndReconstructLayout(rawItems, pageWidth = 794) {
       if (appState.editMode === 'exact') {
-        // Exact mode: keep every text fragment at its exact coordinate without merging into tables
+        // Exact mode: keep every text fragment at its exact coordinate without merging
         return {
           textBlocks: rawItems.map(item => ({ ...item })),
+          unifiedDocBlock: null,
+          nonTableRawRects: [],
           tables: []
         };
       }
 
-      // Hybrid Smart Mode:
       // Step 1: Sort items top-to-bottom, then left-to-right
       const sorted = [...rawItems].sort((a, b) => {
         if (Math.abs(a.y - b.y) <= 6) return a.x - b.x;
@@ -400,34 +688,37 @@
         const mergedCells = [];
         for (const item of row.items) {
           const prev = mergedCells[mergedCells.length - 1];
-          // Merge adjacent words on the same line if gap is small (< 14px) and not explicitly marked as table columns
-          if (prev && !item.isTableCandidate && (item.x - (prev.x + prev.w)) < 14 && Math.abs(prev.fontSize - item.fontSize) <= 2) {
+          if (
+            prev &&
+            !item.isTableCandidate &&
+            (item.x - (prev.x + prev.w)) < 14 &&
+            Math.abs(prev.fontSize - item.fontSize) <= 2 &&
+            prev.fontWeight === item.fontWeight &&
+            prev.color === item.color
+          ) {
             prev.text += item.text;
             prev.w = Math.max(prev.w, (item.x + item.w) - prev.x);
           } else {
             mergedCells.push({ ...item });
           }
         }
-        return { y: row.y, cells: mergedCells };
+        return { y: row.y, cells: mergedCells, rawRowItems: row.items };
       });
 
       // Step 3: Detect consecutive multi-column rows that form a Table Grid
       const tables = [];
-      const textBlocks = [];
-
+      const nonTableRows = [];
+      const nonTableRawRects = [];
       let currentTableRows = [];
 
       function flushCurrentTable() {
         if (currentTableRows.length >= 3) {
-          // Build a structured table object
           const minX = Math.min(...currentTableRows.flatMap(r => r.cells.map(c => c.x)));
           const maxX = Math.max(...currentTableRows.flatMap(r => r.cells.map(c => c.x + c.w)));
           const minY = currentTableRows[0].y;
           const lastRow = currentTableRows[currentTableRows.length - 1];
           const maxH = Math.max(...lastRow.cells.map(c => c.h || 24));
           const maxY = lastRow.y + maxH;
-
-          // Determine maximum column count
           const colCount = Math.max(...currentTableRows.map(r => r.cells.length));
 
           tables.push({
@@ -439,10 +730,10 @@
             rows: currentTableRows.map(r => r.cells)
           });
         } else {
-          // Not enough rows for a table; release back as normal editable text blocks
           for (const r of currentTableRows) {
-            for (const c of r.cells) {
-              textBlocks.push(c);
+            nonTableRows.push(r);
+            for (const raw of r.rawRowItems) {
+              nonTableRawRects.push(raw);
             }
           }
         }
@@ -462,22 +753,84 @@
           if (isMultiCol) {
             currentTableRows.push(row);
           } else {
-            for (const c of row.cells) {
-              textBlocks.push(c);
+            nonTableRows.push(row);
+            for (const raw of row.rawRowItems) {
+              nonTableRawRects.push(raw);
             }
           }
         }
       }
       flushCurrentTable();
 
-      return { textBlocks, tables };
+      // Step 4: Combine ALL non-table rows on the page into a SINGLE unified Word-like document block
+      let unifiedDocBlock = null;
+      if (nonTableRows.length > 0) {
+        const allCells = nonTableRows.flatMap(r => r.cells);
+        const baseLeft = Math.max(24, Math.min(...allCells.map(c => c.x)));
+        const maxRight = Math.min(pageWidth - 24, Math.max(...allCells.map(c => c.x + c.w)));
+        const baseTop = nonTableRows[0].y;
+        const docWidth = Math.max(320, maxRight - baseLeft + 24);
+
+        const lines = [];
+        let prevBottom = baseTop;
+
+        for (let i = 0; i < nonTableRows.length; i++) {
+          const row = nonTableRows[i];
+          const firstCell = row.cells[0];
+          const maxFontSize = Math.max(...row.cells.map(c => c.fontSize || 14));
+          const rowHeight = Math.max(...row.cells.map(c => c.h || Math.round(maxFontSize * 1.35)));
+          const gapY = i === 0 ? 0 : Math.max(0, row.y - prevBottom);
+          prevBottom = row.y + rowHeight;
+
+          const indentPx = Math.max(0, Math.round(firstCell.x - baseLeft));
+          const isSingleCentered = row.cells.length === 1 && firstCell.align === 'center';
+
+          const segments = [];
+          let prevEndX = firstCell.x;
+          row.cells.forEach((cell, idx) => {
+            const gapX = idx === 0 ? 0 : Math.max(8, Math.round(cell.x - prevEndX));
+            prevEndX = cell.x + (cell.w || 40);
+            segments.push({
+              text: cell.text,
+              fontSize: cell.fontSize || 14,
+              fontWeight: cell.fontWeight || '400',
+              color: cell.color || '#0f172a',
+              gapX
+            });
+          });
+
+          lines.push({
+            y: row.y,
+            marginTop: gapY,
+            indentPx: isSingleCentered ? 0 : indentPx,
+            align: isSingleCentered ? 'center' : (firstCell.align || 'left'),
+            fontSize: maxFontSize,
+            segments
+          });
+        }
+
+        unifiedDocBlock = {
+          x: baseLeft,
+          y: baseTop,
+          w: docWidth,
+          lines
+        };
+      }
+
+      return {
+        textBlocks: [],
+        unifiedDocBlock,
+        nonTableRawRects,
+        tables
+      };
     }
 
     // =========================================================================
-    // 4. DOM RENDERER: Creates Interactive Pages, Masked Text Blocks & HTML Tables
+    // 4. DOM RENDERER: Creates Interactive Pages, Unified Document Block & Tables
     // =========================================================================
     function renderAllPages() {
       if (appState.selectedElement) selectElement(null);
+      appState.savedRange = null;
       pagesContainer.innerHTML = '';
       thumbnailList.innerHTML = '';
       pageCountBadge.textContent = `${appState.pagesData.length} ページ`;
@@ -497,10 +850,33 @@
         bgImg.style.opacity = appState.bgOpacity;
         pageEl.appendChild(bgImg);
 
-        // 3. Reconstruct Layout (Text Blocks + Auto-Detected Tables)
-        const { textBlocks, tables } = analyzeAndReconstructLayout(pageData.rawItems);
+        // 3. Reconstruct Layout (Unified Document Block or Exact Blocks + Auto-Detected Tables)
+        const { textBlocks, unifiedDocBlock, nonTableRawRects, tables } = analyzeAndReconstructLayout(
+          pageData.rawItems,
+          pageData.width
+        );
 
-        // Render Editable Text Blocks
+        // If uploaded PDF has rasterized text on its background image, mask exact original text coordinates
+        // so decorative borders/lines remain visible while original glyphs are hidden.
+        if (pageData.needsRasterMask && unifiedDocBlock && nonTableRawRects.length > 0) {
+          nonTableRawRects.forEach(rect => {
+            const mask = document.createElement('div');
+            mask.className = 'pdf-text-mask';
+            mask.style.left = `${Math.max(0, rect.x - 2)}px`;
+            mask.style.top = `${Math.max(0, rect.y - 2)}px`;
+            mask.style.width = `${rect.w + 4}px`;
+            mask.style.height = `${rect.h + 4}px`;
+            pageEl.appendChild(mask);
+          });
+        }
+
+        // Render Unified Single-Article Document Block (Word-like full text editing)
+        if (unifiedDocBlock) {
+          const unifiedEl = createUnifiedDocumentElement(unifiedDocBlock);
+          pageEl.appendChild(unifiedEl);
+        }
+
+        // Render Individual Editable Text Blocks (in Exact mode)
         textBlocks.forEach(block => {
           const textEl = createEditableTextElement(block);
           pageEl.appendChild(textEl);
@@ -540,12 +916,92 @@
       if (typeof lucide !== 'undefined') lucide.createIcons();
     }
 
-    // Create a Word-like Editable Text Element
+    // Create a Unified Word-like Document Element where ALL lines on the page are edited as a single article
+    function createUnifiedDocumentElement(docBlock) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'editable-item unified-doc-block masked-bg';
+      wrapper.style.left = `${docBlock.x}px`;
+      wrapper.style.top = `${docBlock.y}px`;
+      wrapper.style.width = `${docBlock.w}px`;
+      wrapper.style.fontSize = '14px';
+      wrapper.style.color = '#0f172a';
+
+      // Drag Handle (kept outside editable-content so Ctrl+A / Backspace never deletes the handle)
+      const handle = document.createElement('div');
+      handle.className = 'drag-handle';
+      handle.contentEditable = 'false';
+      handle.innerHTML = `<span>⋮⋮ 全文テキスト領域を移動 (自由に改行・部分装飾可)</span>`;
+      wrapper.appendChild(handle);
+
+      // Single continuous contentEditable container for all lines
+      const contentArea = document.createElement('div');
+      contentArea.className = 'editable-content';
+      contentArea.contentEditable = 'true';
+      contentArea.spellcheck = false;
+
+      docBlock.lines.forEach(line => {
+        const lineDiv = document.createElement('div');
+        lineDiv.className = 'doc-line';
+        if (line.marginTop > 0) {
+          lineDiv.style.marginTop = `${line.marginTop}px`;
+        }
+        if (line.indentPx > 0) {
+          lineDiv.style.paddingLeft = `${line.indentPx}px`;
+        }
+        if (line.align && line.align !== 'left') {
+          lineDiv.style.textAlign = line.align;
+        }
+
+        line.segments.forEach((seg, sIdx) => {
+          const span = document.createElement('span');
+          span.className = 'rt-styled doc-line-text';
+          span.style.fontSize = `${seg.fontSize}px`;
+          span.style.fontWeight = seg.fontWeight;
+          span.style.color = seg.color;
+          if (sIdx > 0 && seg.gapX > 0) {
+            span.style.marginLeft = `${seg.gapX}px`;
+          }
+          span.textContent = seg.text;
+          lineDiv.appendChild(span);
+        });
+
+        contentArea.appendChild(lineDiv);
+      });
+
+      // When pressing Enter inside a line with large marginTop (e.g. first line after a table),
+      // prevent the newly created line from inheriting the large marginTop gap.
+      contentArea.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          window.requestAnimationFrame(() => {
+            const sel = window.getSelection();
+            if (!sel || !sel.rangeCount) return;
+            const node = sel.getRangeAt(0).startContainer;
+            const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+            const curLine = el ? el.closest('.doc-line, div') : null;
+            if (curLine && curLine.parentElement === contentArea && curLine.previousElementSibling) {
+              const prev = curLine.previousElementSibling;
+              if (prev.style && prev.style.marginTop && curLine.style.marginTop === prev.style.marginTop) {
+                curLine.style.marginTop = '4px';
+              }
+            }
+          });
+        }
+      });
+
+      contentArea.addEventListener('mouseup', saveCurrentSelectionRange);
+      contentArea.addEventListener('keyup', saveCurrentSelectionRange);
+
+      wrapper.appendChild(contentArea);
+      makeElementDraggable(wrapper, handle);
+      bindElementSelection(wrapper, '全文統合テキスト (Wordライク編集)');
+
+      return wrapper;
+    }
+
+    // Create an Individual Word-like Editable Text Element (used in Exact mode & "+ テキスト追加")
     function createEditableTextElement(block) {
       const wrapper = document.createElement('div');
       wrapper.className = 'editable-item masked-bg';
-      wrapper.contentEditable = 'true';
-      wrapper.spellcheck = false;
       wrapper.style.left = `${block.x}px`;
       wrapper.style.top = `${block.y}px`;
       wrapper.style.minWidth = `${Math.max(24, block.w)}px`;
@@ -554,18 +1010,28 @@
       wrapper.style.color = block.color || '#0f172a';
       if (block.align) wrapper.style.textAlign = block.align;
 
-      // Text Span
-      const textSpan = document.createElement('span');
-      textSpan.textContent = block.text;
-      wrapper.appendChild(textSpan);
-
-      // Drag Handle (non-editable)
+      // Drag Handle (non-editable sibling of editable-content)
       const handle = document.createElement('div');
       handle.className = 'drag-handle';
       handle.contentEditable = 'false';
       handle.innerHTML = `<span>⋮⋮ 移動</span>`;
       wrapper.appendChild(handle);
 
+      // Editable Content Container
+      const contentArea = document.createElement('div');
+      contentArea.className = 'editable-content';
+      contentArea.contentEditable = 'true';
+      contentArea.spellcheck = false;
+
+      const textSpan = document.createElement('span');
+      textSpan.className = 'rt-styled';
+      textSpan.textContent = block.text;
+      contentArea.appendChild(textSpan);
+
+      contentArea.addEventListener('mouseup', saveCurrentSelectionRange);
+      contentArea.addEventListener('keyup', saveCurrentSelectionRange);
+
+      wrapper.appendChild(contentArea);
       makeElementDraggable(wrapper, handle);
       bindElementSelection(wrapper, 'テキストブロック');
 
@@ -616,6 +1082,8 @@
             td.style.textAlign = 'right';
           }
 
+          td.addEventListener('mouseup', saveCurrentSelectionRange);
+          td.addEventListener('keyup', saveCurrentSelectionRange);
           tr.appendChild(td);
         }
         table.appendChild(tr);
@@ -664,7 +1132,6 @@
     function createDecorativeBoxElement(x = 120, y = 260) {
       const box = document.createElement('div');
       box.className = 'editable-item masked-bg';
-      box.contentEditable = 'true';
       box.style.left = `${x}px`;
       box.style.top = `${y}px`;
       box.style.width = '260px';
@@ -674,15 +1141,26 @@
       box.style.backgroundColor = '#ffffff';
       box.style.fontSize = '14px';
 
-      const span = document.createElement('span');
-      span.textContent = '装飾枠・白塗りマスク（文字入力やサイズ変更が可能です）';
-      box.appendChild(span);
-
       const handle = document.createElement('div');
       handle.className = 'drag-handle';
       handle.contentEditable = 'false';
       handle.innerHTML = `<span>⋮⋮ 枠を移動</span>`;
       box.appendChild(handle);
+
+      const contentArea = document.createElement('div');
+      contentArea.className = 'editable-content';
+      contentArea.contentEditable = 'true';
+      contentArea.spellcheck = false;
+
+      const span = document.createElement('span');
+      span.className = 'rt-styled';
+      span.textContent = '装飾枠・白塗りマスク（文字入力やサイズ変更が可能です）';
+      contentArea.appendChild(span);
+
+      contentArea.addEventListener('mouseup', saveCurrentSelectionRange);
+      contentArea.addEventListener('keyup', saveCurrentSelectionRange);
+
+      box.appendChild(contentArea);
 
       makeElementDraggable(box, handle);
       bindElementSelection(box, '装飾ボックス / 白消しマスク');
@@ -776,7 +1254,10 @@
 
       const computed = window.getComputedStyle(el);
       const fontSize = parseInt(computed.fontSize, 10) || 14;
-      document.getElementById('fontSizeInput').value = fontSize;
+      const fontSizeInput = document.getElementById('fontSizeInput');
+      if (document.activeElement !== fontSizeInput) {
+        fontSizeInput.value = fontSize;
+      }
       document.getElementById('propMaskBg').checked = el.classList.contains('masked-bg');
     }
 
@@ -784,14 +1265,15 @@
     workspaceViewport.addEventListener('mousedown', (e) => {
       if (e.target === workspaceViewport || e.target === pagesContainer || e.target.classList.contains('pdf-page-container')) {
         selectElement(null);
+        appState.savedRange = null;
       }
     });
 
     // =========================================================================
-    // 6. TOOLBAR & INSPECTOR ACTIONS
+    // 6. TOOLBAR & INSPECTOR ACTIONS (WITH PARTIAL SELECTION SUPPORT)
     // =========================================================================
 
-    // Mode Switching (Smart Reconstruction vs Exact Overlay)
+    // Mode Switching (Smart Unified Reconstruction vs Exact Overlay)
     const modeHybridBtn = document.getElementById('modeHybridBtn');
     const modeExactBtn = document.getElementById('modeExactBtn');
 
@@ -799,7 +1281,7 @@
       appState.editMode = 'hybrid';
       modeHybridBtn.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-md font-medium bg-white text-blue-700 shadow-sm transition';
       modeExactBtn.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-md font-medium text-slate-600 hover:text-slate-900 transition';
-      modeStatusText.textContent = '| モード: スマート再構築 (表・段落の自動認識)';
+      modeStatusText.textContent = '| モード: スマート再構築 (全文1文書統合・表の自動認識)';
       modeHybridBtn.setAttribute('aria-pressed', 'true');
       modeExactBtn.setAttribute('aria-pressed', 'false');
       renderAllPages();
@@ -815,53 +1297,83 @@
       renderAllPages();
     });
 
-    // Typography Controls
-    document.getElementById('fontFamilySelect').addEventListener('change', (e) => {
-      if (appState.selectedElement) {
-        appState.selectedElement.style.fontFamily = e.target.value;
+    // Prevent toolbar buttons from stealing selection focus when clicked
+    ['btnBold', 'btnItalic', 'btnUnderline'].forEach(id => {
+      const btn = document.getElementById(id);
+      if (btn) {
+        btn.addEventListener('mousedown', (e) => {
+          saveCurrentSelectionRange();
+          e.preventDefault();
+        });
       }
+    });
+    document.querySelectorAll('.align-btn').forEach(btn => {
+      btn.addEventListener('mousedown', (e) => {
+        saveCurrentSelectionRange();
+        e.preventDefault();
+      });
+    });
+
+    // Typography Controls: Partial Selection or Block Styling
+    document.getElementById('fontFamilySelect').addEventListener('change', (e) => {
+      applyStyleToSelectionOrElement('fontFamily', e.target.value);
+      if (appState.savedRange) restoreSelectionRange(appState.savedRange);
     });
 
     document.getElementById('fontSizeInput').addEventListener('input', (e) => {
-      if (appState.selectedElement) {
-        appState.selectedElement.style.fontSize = `${e.target.value}px`;
-      }
+      const val = parseInt(e.target.value, 10);
+      if (!Number.isFinite(val) || val < 4 || val > 240) return;
+      applyStyleToSelectionOrElement('fontSize', `${val}px`);
+    });
+
+    document.getElementById('fontSizeInput').addEventListener('change', () => {
+      if (appState.savedRange) restoreSelectionRange(appState.savedRange);
     });
 
     document.getElementById('btnBold').addEventListener('click', () => {
-      if (!appState.selectedElement) return;
-      const cur = window.getComputedStyle(appState.selectedElement).fontWeight;
-      appState.selectedElement.style.fontWeight = (cur === '700' || cur === 'bold') ? '400' : '700';
+      applyStyleToSelectionOrElement('fontWeight', '700', (computed) => {
+        const w = computed.fontWeight;
+        return (w === '700' || w === 'bold' || parseInt(w, 10) >= 600) ? '400' : '700';
+      });
     });
 
     document.getElementById('btnItalic').addEventListener('click', () => {
-      if (!appState.selectedElement) return;
-      const cur = window.getComputedStyle(appState.selectedElement).fontStyle;
-      appState.selectedElement.style.fontStyle = cur === 'italic' ? 'normal' : 'italic';
+      applyStyleToSelectionOrElement('fontStyle', 'italic', (computed) => {
+        return computed.fontStyle === 'italic' ? 'normal' : 'italic';
+      });
     });
 
     document.getElementById('btnUnderline').addEventListener('click', () => {
-      if (!appState.selectedElement) return;
-      const cur = window.getComputedStyle(appState.selectedElement).textDecorationLine;
-      appState.selectedElement.style.textDecoration = cur.includes('underline') ? 'none' : 'underline';
+      applyStyleToSelectionOrElement('textDecoration', 'underline', (computed) => {
+        const dec = computed.textDecorationLine || computed.textDecoration || '';
+        return dec.includes('underline') ? 'none' : 'underline';
+      });
     });
 
     document.getElementById('textColorPicker').addEventListener('input', (e) => {
-      if (appState.selectedElement) {
-        appState.selectedElement.style.color = e.target.value;
-      }
+      applyStyleToSelectionOrElement('color', e.target.value);
     });
 
     document.getElementById('bgColorPicker').addEventListener('input', (e) => {
-      if (appState.selectedElement) {
-        appState.selectedElement.style.backgroundColor = e.target.value;
-      }
+      applyStyleToSelectionOrElement('backgroundColor', e.target.value);
     });
 
     document.querySelectorAll('.align-btn').forEach(btn => {
       btn.addEventListener('click', () => {
+        const alignVal = btn.dataset.align;
+        const range = getActiveRangeForStyling() || appState.savedRange;
+        if (range && appState.selectedElement && appState.selectedElement.classList.contains('unified-doc-block')) {
+          const startNode = range.startContainer.nodeType === Node.ELEMENT_NODE
+            ? range.startContainer
+            : range.startContainer.parentElement;
+          const lineEl = startNode ? startNode.closest('.doc-line') : null;
+          if (lineEl) {
+            lineEl.style.textAlign = alignVal;
+            return;
+          }
+        }
         if (appState.selectedElement) {
-          appState.selectedElement.style.textAlign = btn.dataset.align;
+          appState.selectedElement.style.textAlign = alignVal;
         }
       });
     });
@@ -886,7 +1398,8 @@
       });
       pageEl.appendChild(newText);
       selectElement(newText);
-      newText.focus();
+      const editable = newText.querySelector('.editable-content') || newText;
+      editable.focus();
     });
 
     document.getElementById('btnAddTable').addEventListener('click', () => {
@@ -939,7 +1452,10 @@
       for (let i = 0; i < colCount; i++) {
         const td = tr.insertCell(-1);
         td.contentEditable = 'true';
+        td.spellcheck = false;
         td.textContent = '';
+        td.addEventListener('mouseup', saveCurrentSelectionRange);
+        td.addEventListener('keyup', saveCurrentSelectionRange);
       }
     });
 
@@ -958,11 +1474,14 @@
       Array.from(table.rows).forEach((tr, rIdx) => {
         const td = tr.insertCell(-1);
         td.contentEditable = 'true';
+        td.spellcheck = false;
         td.textContent = rIdx === 0 ? '新規列' : '';
         if (rIdx === 0) {
           td.style.backgroundColor = '#f1f5f9';
           td.style.fontWeight = '700';
         }
+        td.addEventListener('mouseup', saveCurrentSelectionRange);
+        td.addEventListener('keyup', saveCurrentSelectionRange);
       });
     });
 
@@ -988,9 +1507,10 @@
     });
     document.getElementById('propMaskBg').addEventListener('change', (e) => {
       if (!appState.selectedElement) return;
+      const isUnified = appState.selectedElement.classList.contains('unified-doc-block');
       if (e.target.checked) {
         appState.selectedElement.classList.add('masked-bg');
-        appState.selectedElement.style.backgroundColor = '#ffffff';
+        if (!isUnified) appState.selectedElement.style.backgroundColor = '#ffffff';
       } else {
         appState.selectedElement.classList.remove('masked-bg');
         appState.selectedElement.style.backgroundColor = 'transparent';
@@ -1011,6 +1531,11 @@
       clone.style.top = `${(parseFloat(appState.selectedElement.style.top) || 0) + 20}px`;
       const handle = clone.querySelector('.drag-handle');
       if (handle) makeElementDraggable(clone, handle);
+      const contentArea = clone.querySelector('.editable-content');
+      if (contentArea) {
+        contentArea.addEventListener('mouseup', saveCurrentSelectionRange);
+        contentArea.addEventListener('keyup', saveCurrentSelectionRange);
+      }
       bindElementSelection(clone, appState.selectedElement.dataset.typeLabel);
       appState.selectedElement.parentElement.appendChild(clone);
       selectElement(clone);
@@ -1018,7 +1543,7 @@
 
     document.getElementById('btnBringFront').addEventListener('click', () => {
       if (appState.selectedElement) {
-        appState.selectedElement.style.zIndex = '45';
+        appState.selectedElement.style.zIndex = '50';
       }
     });
 
@@ -1026,6 +1551,7 @@
       if (appState.selectedElement) {
         appState.selectedElement.remove();
         selectElement(null);
+        appState.savedRange = null;
       }
     });
 
@@ -1045,7 +1571,6 @@
       document.getElementById('zoomLevelText').textContent = `${Math.round(appState.zoom * 100)}%`;
       document.querySelectorAll('.pdf-page-container').forEach(pageEl => {
         pageEl.style.transform = `scale(${appState.zoom})`;
-        // Adjust bottom margin so scaled pages don't overlap or leave huge gaps
         const baseH = parseFloat(pageEl.style.height) || 1123;
         const diff = baseH * (appState.zoom - 1);
         pageEl.style.marginBottom = `${32 + diff}px`;
@@ -1140,7 +1665,55 @@
       })[char]);
     }
 
-    // Export as Word-compatible .doc file (Preserves tables and positioned paragraphs)
+    // Safely serialize rich-text nodes (preserving partial font-family, font-size, bold, italic, underline, color, and line breaks)
+    function serializeRichNodeToSafeHtml(node) {
+      if (!node) return '';
+      if (node.nodeType === Node.TEXT_NODE) {
+        return escapeHtml(node.nodeValue || '');
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+      const el = node;
+      if (el.classList.contains('drag-handle')) return '';
+
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'br') return '<br/>';
+
+      const allowedStyles = [];
+      const st = el.style;
+      if (st) {
+        if (st.fontFamily) allowedStyles.push(`font-family:${escapeHtml(st.fontFamily)}`);
+        if (st.fontSize) allowedStyles.push(`font-size:${escapeHtml(st.fontSize)}`);
+        if (st.fontWeight) allowedStyles.push(`font-weight:${escapeHtml(st.fontWeight)}`);
+        if (st.fontStyle) allowedStyles.push(`font-style:${escapeHtml(st.fontStyle)}`);
+        if (st.textDecoration || st.textDecorationLine) {
+          allowedStyles.push(`text-decoration:${escapeHtml(st.textDecoration || st.textDecorationLine)}`);
+        }
+        if (st.color) allowedStyles.push(`color:${escapeHtml(st.color)}`);
+        if (st.backgroundColor && st.backgroundColor !== 'transparent') {
+          allowedStyles.push(`background-color:${escapeHtml(st.backgroundColor)}`);
+        }
+        if (st.textAlign) allowedStyles.push(`text-align:${escapeHtml(st.textAlign)}`);
+        if (st.paddingLeft) allowedStyles.push(`padding-left:${escapeHtml(st.paddingLeft)}`);
+        if (st.marginLeft) allowedStyles.push(`margin-left:${escapeHtml(st.marginLeft)}`);
+      }
+      const styleAttr = allowedStyles.length ? ` style="${allowedStyles.join(';')}"` : '';
+
+      let inner = '';
+      for (const child of el.childNodes) {
+        inner += serializeRichNodeToSafeHtml(child);
+      }
+
+      if (tag === 'div' || tag === 'p') {
+        return `<p${styleAttr}>${inner || '<br/>'}</p>`;
+      }
+      if (tag === 'b' || tag === 'strong' || tag === 'i' || tag === 'em' || tag === 'u') {
+        return `<${tag}${styleAttr}>${inner}</${tag}>`;
+      }
+      return styleAttr ? `<span${styleAttr}>${inner}</span>` : inner;
+    }
+
+    // Export as Word-compatible .doc file (Preserves tables, line breaks, and partial inline font/size formatting)
     document.getElementById('btnExportWord').addEventListener('click', () => {
       const pageElements = document.querySelectorAll('.pdf-page-container');
       if (!pageElements.length) return;
@@ -1149,13 +1722,13 @@
       selectElement(null);
 
       let wordHtml = `
-        <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+        <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='[http://www.w3.org/TR/REC-html40](http://www.w3.org/TR/REC-html40)'>
         <head><meta charset='utf-8'><title>Exported Document</title>
         <style>
-          body { font-family: 'Meiryo', 'MS PGothic', sans-serif; }
+          body { font-family: 'Noto Sans JP', 'Meiryo', 'MS PGothic', sans-serif; }
           table { border-collapse: collapse; width: 100%; margin: 12pt 0; }
           td, th { border: 1pt solid #334155; padding: 6pt; font-size: 10.5pt; }
-          p { margin: 4pt 0; }
+          p { margin: 3pt 0; line-height: 1.35; }
         </style>
         </head><body>
       `;
@@ -1163,7 +1736,6 @@
       pageElements.forEach((pageEl, idx) => {
         if (idx > 0) wordHtml += `<br clear="all" style="page-break-before:always" />`;
 
-        // Collect all editable items and tables sorted by vertical Y position
         const children = Array.from(pageEl.querySelectorAll('.editable-item, .editable-table-wrapper'));
         children.sort((a, b) => (parseFloat(a.style.top) || 0) - (parseFloat(b.style.top) || 0));
 
@@ -1173,22 +1745,17 @@
             if (tbl) {
               const rows = Array.from(tbl.rows).map(row => {
                 const cells = Array.from(row.cells).map(cell =>
-                  `<td>${escapeHtml(cell.innerText || cell.textContent || '')}</td>`
+                  `<td>${serializeRichNodeToSafeHtml(cell)}</td>`
                 ).join('');
                 return `<tr>${cells}</tr>`;
               }).join('');
               wordHtml += `<table>${rows}</table>`;
             }
           } else {
-            const clone = el.cloneNode(true);
-            const handle = clone.querySelector('.drag-handle');
-            if (handle) handle.remove();
-            const text = clone.innerText.trim();
-            if (text) {
-              const fontSize = el.style.fontSize || '14px';
-              const fontWeight = el.style.fontWeight || '400';
-              const color = el.style.color || '#000000';
-              wordHtml += `<p style="font-size:${escapeHtml(fontSize)}; font-weight:${escapeHtml(fontWeight)}; color:${escapeHtml(color)};">${escapeHtml(text)}</p>`;
+            const contentRoot = el.querySelector('.editable-content') || el;
+            const richHtml = serializeRichNodeToSafeHtml(contentRoot);
+            if (richHtml.trim()) {
+              wordHtml += `<div>${richHtml}</div>`;
             }
           }
         });
@@ -1266,4 +1833,3 @@
     window.addEventListener('DOMContentLoaded', () => {
       loadRealisticSampleDocument();
     });
-
