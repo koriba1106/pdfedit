@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DocuCraft PDF - レイアウト保持＆Wordライク直接編集ソフト</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Fonts (Japanese support) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Noto+Serif+JP:wght@400;600;700&family=M+PLUS+1p:wght@400;700&display=swap" rel="stylesheet">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- PDF.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <!-- html2canvas & jsPDF for high-fidelity client-side PDF export -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body class="h-screen flex flex-col text-slate-800">
+
+  <!-- TOP HEADER BAR -->
+  <header class="bg-slate-900 text-white px-4 py-2 flex items-center justify-between border-b border-slate-700 shrink-0">
+    <div class="flex items-center gap-3">
+      <div class="bg-blue-600 p-1.5 rounded-lg flex items-center justify-center shadow-inner">
+        <i data-lucide="file-edit" class="w-5 h-5 text-white"></i>
+      </div>
+      <div>
+        <div class="flex items-center gap-2">
+          <h1 class="font-bold text-base tracking-tight">DocuCraft PDF Studio</h1>
+          <span class="text-[11px] bg-blue-500/20 text-blue-300 border border-blue-400/30 px-2 py-0.5 rounded-full font-medium">Wordライク直接編集</span>
+        </div>
+        <p class="text-[11px] text-slate-400 hidden sm:block">PDF本体は端末内で処理。レイアウト・表・装飾をブラウザで直接編集</p>
+      </div>
+    </div>
+
+    <!-- Document Name & Quick Actions -->
+    <div class="flex items-center gap-2">
+      <button id="btnLoadSample" class="flex items-center gap-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs px-3 py-1.5 rounded-md shadow transition">
+        <i data-lucide="sparkles" class="w-4 h-4"></i>
+        <span>サンプル見積書PDFで試す</span>
+      </button>
+
+      <label for="pdfUploadInput" class="cursor-pointer flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-white text-xs px-3 py-1.5 rounded-md transition">
+        <i data-lucide="folder-open" class="w-4 h-4 text-blue-400"></i>
+        <span>PDFを開く</span>
+      </label>
+      <input type="file" id="pdfUploadInput" accept="application/pdf,.pdf" class="hidden">
+
+      <div class="h-5 w-[1px] bg-slate-700 mx-1"></div>
+
+      <button id="btnExportWord" class="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 text-xs px-3 py-1.5 rounded-md transition" title="Wordで開ける形式で保存">
+        <i data-lucide="file-text" class="w-4 h-4 text-sky-400"></i>
+        <span class="hidden md:inline">Word (.doc) 出力</span>
+      </button>
+
+      <button id="btnExportPDF" class="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs px-3.5 py-1.5 rounded-md shadow transition">
+        <i data-lucide="download" class="w-4 h-4"></i>
+        <span>PDFとして保存</span>
+      </button>
+
+      <button id="btnGithubGuide" class="flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs px-2.5 py-1.5 rounded-md border border-slate-700 transition" title="GitHub Pagesへの公開手順">
+        <i data-lucide="github" class="w-4 h-4"></i>
+        <span class="hidden lg:inline">GitHub公開手順</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- WORD-LIKE RIBBON TOOLBAR -->
+  <div class="app-toolbar bg-white border-b border-slate-200 px-3 py-2 shadow-sm shrink-0 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs" role="toolbar" aria-label="編集ツール">
+
+    <!-- 1. Reconstruction & Editing Mode Switcher -->
+    <div class="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200">
+      <button id="modeHybridBtn" aria-pressed="true" class="flex items-center gap-1.5 px-2.5 py-1 rounded-md font-medium bg-white text-blue-700 shadow-sm transition" title="段落の結合と表の自動検出を行いWordのように編集します">
+        <i data-lucide="wand-2" class="w-3.5 h-3.5"></i>
+        <span>スマート再構築 (表・段落)</span>
+      </button>
+      <button id="modeExactBtn" aria-pressed="false" class="flex items-center gap-1.5 px-2.5 py-1 rounded-md font-medium text-slate-600 hover:text-slate-900 transition" title="元のPDF配置を1ミリも崩さず個別の文字ブロックを直接書き換えます">
+        <i data-lucide="layers" class="w-3.5 h-3.5"></i>
+        <span>厳密レイアウト固定</span>
+      </button>
+    </div>
+
+    <div class="h-6 w-[1px] bg-slate-200"></div>
+
+    <!-- 2. Font & Typography Controls -->
+    <div class="flex items-center gap-1.5">
+      <select id="fontFamilySelect" class="border border-slate-300 rounded px-2 py-1 bg-white text-slate-700 focus:outline-none focus:border-blue-500">
+        <option value="'Noto Sans JP', sans-serif">ゴシック体 (Noto Sans JP)</option>
+        <option value="'Noto Serif JP', serif">明朝体 (Noto Serif JP)</option>
+        <option value="'M PLUS 1p', sans-serif">丸ゴシック風 (M PLUS 1p)</option>
+        <option value="'Meiryo', sans-serif">メイリオ (Meiryo)</option>
+        <option value="monospace">等幅フォント (Monospace)</option>
+      </select>
+
+      <div class="flex items-center border border-slate-300 rounded bg-white">
+        <input type="number" id="fontSizeInput" value="14" min="6" max="120" class="w-12 px-1.5 py-1 text-center focus:outline-none">
+        <span class="text-[10px] text-slate-400 pr-1.5">px</span>
+      </div>
+
+      <button id="btnBold" class="p-1.5 rounded hover:bg-slate-100 text-slate-700 border border-transparent hover:border-slate-200" title="太字 (Ctrl+B)">
+        <i data-lucide="bold" class="w-4 h-4"></i>
+      </button>
+      <button id="btnItalic" class="p-1.5 rounded hover:bg-slate-100 text-slate-700 border border-transparent hover:border-slate-200" title="斜体 (Ctrl+I)">
+        <i data-lucide="italic" class="w-4 h-4"></i>
+      </button>
+      <button id="btnUnderline" class="p-1.5 rounded hover:bg-slate-100 text-slate-700 border border-transparent hover:border-slate-200" title="下線 (Ctrl+U)">
+        <i data-lucide="underline" class="w-4 h-4"></i>
+      </button>
+
+      <!-- Text Color & Background Mask Color -->
+      <label class="flex items-center gap-1 px-1.5 py-1 rounded hover:bg-slate-100 cursor-pointer border border-transparent hover:border-slate-200" title="文字色">
+        <i data-lucide="baseline" class="w-4 h-4 text-slate-700"></i>
+        <input type="color" id="textColorPicker" value="#0f172a" class="w-4 h-4 cursor-pointer border-0 bg-transparent p-0">
+      </label>
+
+      <label class="flex items-center gap-1 px-1.5 py-1 rounded hover:bg-slate-100 cursor-pointer border border-transparent hover:border-slate-200" title="背景色・マーカー色">
+        <i data-lucide="paint-bucket" class="w-4 h-4 text-slate-700"></i>
+        <input type="color" id="bgColorPicker" value="#ffffff" class="w-4 h-4 cursor-pointer border-0 bg-transparent p-0">
+      </label>
+    </div>
+
+    <div class="h-6 w-[1px] bg-slate-200"></div>
+
+    <!-- 3. Alignment -->
+    <div class="flex items-center gap-0.5">
+      <button data-align="left" class="align-btn p-1.5 rounded hover:bg-slate-100 text-slate-700" title="左揃え">
+        <i data-lucide="align-left" class="w-4 h-4"></i>
+      </button>
+      <button data-align="center" class="align-btn p-1.5 rounded hover:bg-slate-100 text-slate-700" title="中央揃え">
+        <i data-lucide="align-center" class="w-4 h-4"></i>
+      </button>
+      <button data-align="right" class="align-btn p-1.5 rounded hover:bg-slate-100 text-slate-700" title="右揃え">
+        <i data-lucide="align-right" class="w-4 h-4"></i>
+      </button>
+    </div>
+
+    <div class="h-6 w-[1px] bg-slate-200"></div>
+
+    <!-- 4. Insert Elements (Text, Table, Stamp, Box, Mask) -->
+    <div class="flex items-center gap-1">
+      <button id="btnAddText" class="flex items-center gap-1 px-2 py-1 rounded hover:bg-blue-50 text-slate-700 hover:text-blue-700 border border-slate-200 transition">
+        <i data-lucide="type" class="w-3.5 h-3.5 text-blue-600"></i>
+        <span>テキスト追加</span>
+      </button>
+
+      <button id="btnAddTable" class="flex items-center gap-1 px-2 py-1 rounded hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 border border-slate-200 transition">
+        <i data-lucide="table" class="w-3.5 h-3.5 text-emerald-600"></i>
+        <span>表を挿入</span>
+      </button>
+
+      <button id="btnAddBox" class="flex items-center gap-1 px-2 py-1 rounded hover:bg-slate-100 text-slate-700 border border-slate-200 transition" title="飾り枠や白塗りマスク図形を追加">
+        <i data-lucide="square" class="w-3.5 h-3.5 text-indigo-600"></i>
+        <span>装飾枠/白消し</span>
+      </button>
+
+      <button id="btnAddStamp" class="flex items-center gap-1 px-2 py-1 rounded hover:bg-red-50 text-slate-700 hover:text-red-700 border border-slate-200 transition" title="承認印・社外秘スタンプを追加">
+        <i data-lucide="stamp" class="w-3.5 h-3.5 text-red-600"></i>
+        <span>電子印鑑</span>
+      </button>
+    </div>
+
+    <!-- Contextual Table Tools (Shown when a table is active) -->
+    <div id="tableContextTools" class="hidden items-center gap-1 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+      <span class="text-[11px] font-bold text-emerald-800 mr-1">表ツール:</span>
+      <button id="btnTableAddRow" class="px-1.5 py-0.5 bg-white hover:bg-emerald-100 text-emerald-800 rounded border border-emerald-300 text-[11px]">+ 行追加</button>
+      <button id="btnTableDelRow" class="px-1.5 py-0.5 bg-white hover:bg-red-50 text-red-700 rounded border border-red-200 text-[11px]">- 行削除</button>
+      <button id="btnTableAddCol" class="px-1.5 py-0.5 bg-white hover:bg-emerald-100 text-emerald-800 rounded border border-emerald-300 text-[11px]">+ 列追加</button>
+      <button id="btnTableDelCol" class="px-1.5 py-0.5 bg-white hover:bg-red-50 text-red-700 rounded border border-red-200 text-[11px]">- 列削除</button>
+    </div>
+
+    <div class="h-6 w-[1px] bg-slate-200 ml-auto"></div>
+
+    <!-- 5. View & Layer Controls -->
+    <div class="flex items-center gap-2">
+      <label class="flex items-center gap-1.5 cursor-pointer text-slate-600 hover:text-slate-900 select-none" title="点線の編集枠ガイドを表示/非表示">
+        <input type="checkbox" id="toggleGuides" checked class="rounded text-blue-600 focus:ring-0">
+        <span>枠線ガイド</span>
+      </label>
+
+      <div class="flex items-center gap-1 text-slate-600" title="元のPDF背景（罫線・ロゴ・装飾）の濃さを調整">
+        <i data-lucide="image" class="w-3.5 h-3.5"></i>
+        <span class="hidden xl:inline">元背景:</span>
+        <input type="range" id="bgOpacitySlider" min="0" max="100" value="100" class="w-16 accent-blue-600 cursor-pointer">
+      </div>
+
+      <button id="btnDeleteSelected" class="p-1.5 rounded hover:bg-red-50 text-slate-500 hover:text-red-600 transition" title="選択中の要素を削除 (Delete)">
+        <i data-lucide="trash-2" class="w-4 h-4"></i>
+      </button>
+    </div>
+  </div>
+
+  <!-- MAIN WORKSPACE AREA -->
+  <div class="flex-1 flex overflow-hidden relative">
+
+    <!-- LEFT SIDEBAR: Page Thumbnails & Inspector -->
+    <aside class="w-52 bg-slate-100 border-r border-slate-200 flex flex-col shrink-0 hidden md:flex">
+      <div class="px-3 py-2 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+        <span class="text-xs font-bold text-slate-600 flex items-center gap-1.5">
+          <i data-lucide="book-open" class="w-3.5 h-3.5 text-blue-600"></i>
+          ページ一覧
+        </span>
+        <span id="pageCountBadge" class="text-[11px] bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-medium">1 ページ</span>
+      </div>
+
+      <!-- Thumbnails Container -->
+      <div id="thumbnailList" class="flex-1 overflow-y-auto p-3 space-y-3">
+        <!-- Populated dynamically -->
+      </div>
+
+      <!-- Quick Help / Tips Box -->
+      <div class="p-3 bg-blue-50/70 border-t border-blue-100 text-[11px] text-slate-600 space-y-1.5">
+        <div class="font-bold text-blue-900 flex items-center gap-1">
+          <i data-lucide="lightbulb" class="w-3.5 h-3.5 text-amber-500"></i>
+          <span>Wordライク編集のコツ</span>
+        </div>
+        <p class="leading-relaxed">・文字をクリックするとその場で直接書き換えできます。</p>
+        <p class="leading-relaxed">・青いタブ <span class="bg-blue-600 text-white px-1 rounded text-[9px]">移動</span> をドラッグすると位置を自由に変更できます。</p>
+        <p class="leading-relaxed">・表のセルはTabキーで移動、上部ツールバーで行・列の増減が可能です。</p>
+      </div>
+    </aside>
+
+    <!-- CENTER DOCUMENT VIEWPORT -->
+    <main id="workspaceViewport" aria-label="PDF編集領域" tabindex="0" class="flex-1 overflow-auto p-4 sm:p-8 relative flex flex-col items-center show-guides">
+      <!-- Drag & Drop Overlay -->
+      <div id="dropZoneOverlay" class="pointer-events-none fixed inset-0 bg-blue-600/15 backdrop-blur-[2px] z-50 hidden items-center justify-center border-4 border-dashed border-blue-600 m-4 rounded-2xl">
+        <div class="bg-white px-8 py-6 rounded-xl shadow-2xl text-center">
+          <i data-lucide="upload-cloud" class="w-12 h-12 text-blue-600 mx-auto mb-2"></i>
+          <p class="text-lg font-bold text-slate-800">PDFファイルをここにドロップして直接編集を開始</p>
+          <p class="text-xs text-slate-500 mt-1">PDFファイルは端末内で処理され、アプリのサーバーには送信されません</p>
+        </div>
+      </div>
+
+      <!-- Pages Wrapper -->
+      <div id="pagesContainer" class="w-full flex flex-col items-center pb-16">
+        <!-- Pages rendered here -->
+      </div>
+    </main>
+
+    <!-- RIGHT FLOATING INSPECTOR (Optional properties for selected element) -->
+    <aside id="propertyPanel" class="w-64 bg-white border-l border-slate-200 p-4 flex flex-col gap-4 shrink-0 hidden lg:flex">
+      <div class="border-b border-slate-100 pb-2">
+        <h2 class="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+          <i data-lucide="sliders-horizontal" class="w-3.5 h-3.5 text-blue-600"></i>
+          <span>選択要素のプロパティ・装飾</span>
+        </h2>
+      </div>
+
+      <div id="noSelectionMsg" class="text-xs text-slate-400 py-8 text-center">
+        ページ上のテキスト、表、または図形をクリックすると詳細設定が表示されます
+      </div>
+
+      <div id="selectionControls" class="space-y-4 hidden text-xs">
+        <div>
+          <label class="block text-slate-500 mb-1 font-medium">要素タイプ</label>
+          <div id="selectedTypeBadge" class="inline-block bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded font-semibold">テキストブロック</div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="block text-slate-500 mb-1">X座標 (px)</label>
+            <input type="number" id="propX" class="w-full border border-slate-300 rounded px-2 py-1">
+          </div>
+          <div>
+            <label class="block text-slate-500 mb-1">Y座標 (px)</label>
+            <input type="number" id="propY" class="w-full border border-slate-300 rounded px-2 py-1">
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="block text-slate-500 mb-1">幅 (px)</label>
+            <input type="number" id="propW" class="w-full border border-slate-300 rounded px-2 py-1">
+          </div>
+          <div>
+            <label class="block text-slate-500 mb-1">行間 (Line Height)</label>
+            <input type="number" id="propLineHeight" step="0.1" value="1.3" class="w-full border border-slate-300 rounded px-2 py-1">
+          </div>
+        </div>
+
+        <div class="pt-2 border-t border-slate-100 space-y-2">
+          <label class="block text-slate-500 font-medium">背景マスク & 枠線装飾</label>
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" id="propMaskBg" checked class="rounded text-blue-600">
+            <span>元PDFの文字を白背景で隠す</span>
+          </label>
+
+          <div class="flex items-center justify-between pt-1">
+            <span class="text-slate-600">枠線スタイル:</span>
+            <select id="propBorderStyle" class="border border-slate-300 rounded px-2 py-1 bg-white">
+              <option value="none">なし</option>
+              <option value="1px solid #0f172a">細線 (黒)</option>
+              <option value="2px solid #1e40af">太線 (濃青)</option>
+              <option value="1px dashed #64748b">破線</option>
+              <option value="3px double #0f172a">二重線</option>
+            </select>
+          </div>
+
+          <div class="flex items-center justify-between pt-1">
+            <span class="text-slate-600">余白 (Padding):</span>
+            <input type="range" id="propPadding" min="0" max="24" value="2" class="w-28 accent-blue-600">
+          </div>
+        </div>
+
+        <div class="pt-2 border-t border-slate-100 flex gap-2">
+          <button id="btnDuplicateElem" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-1.5 rounded font-medium flex items-center justify-center gap-1 transition">
+            <i data-lucide="copy" class="w-3.5 h-3.5"></i> 複製
+          </button>
+          <button id="btnBringFront" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-1.5 rounded font-medium flex items-center justify-center gap-1 transition">
+            <i data-lucide="bring-to-front" class="w-3.5 h-3.5"></i> 最前面へ
+          </button>
+        </div>
+      </div>
+
+      <!-- Stamp Customizer Card -->
+      <div class="mt-auto border-t border-slate-200 pt-3">
+        <div class="text-xs font-bold text-slate-700 mb-2 flex items-center gap-1.5">
+          <i data-lucide="stamp" class="w-3.5 h-3.5 text-red-600"></i>
+          <span>ハンコ・電子印鑑作成</span>
+        </div>
+        <div class="flex gap-1.5 mb-2">
+          <input type="text" id="stampTopText" value="承認済" placeholder="上段" class="w-1/2 border border-slate-300 rounded px-2 py-1 text-xs">
+          <input type="text" id="stampBottomText" value="佐藤" placeholder="下段(氏名)" class="w-1/2 border border-slate-300 rounded px-2 py-1 text-xs">
+        </div>
+        <button id="btnCreateCustomStamp" class="w-full bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 py-1.5 rounded text-xs font-semibold transition">
+          この内容で印鑑をページに押す
+        </button>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- BOTTOM STATUS BAR -->
+  <footer class="bg-slate-800 text-slate-300 px-4 py-1 text-[11px] flex items-center justify-between shrink-0">
+    <div class="flex items-center gap-4">
+      <span id="statusMessage" class="flex items-center gap-1.5 text-emerald-400 font-medium" role="status" aria-live="polite">
+        <span data-status-indicator class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span data-status-text>準備完了 — テキストや表を直接クリックしてWordのように編集できます</span>
+      </span>
+      <span id="modeStatusText" class="hidden sm:inline text-slate-400">| モード: スマート再構築 (表・段落の自動認識)</span>
+    </div>
+
+    <div class="flex items-center gap-3">
+      <button id="btnZoomOut" class="hover:text-white px-1"><i data-lucide="minus" class="w-3.5 h-3.5"></i></button>
+      <span id="zoomLevelText" class="font-mono w-12 text-center">100%</span>
+      <button id="btnZoomIn" class="hover:text-white px-1"><i data-lucide="plus" class="w-3.5 h-3.5"></i></button>
+      <button id="btnZoomReset" class="text-[10px] bg-slate-700 hover:bg-slate-600 px-2 py-0.5 rounded">100%に戻す</button>
+    </div>
+  </footer>
+
+  <!-- GITHUB PAGES DEPLOYMENT GUIDE MODAL -->
+  <div id="githubModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+    <div class="bg-white rounded-xl max-w-lg w-full shadow-2xl border border-slate-200 overflow-hidden">
+      <div class="bg-slate-900 text-white px-5 py-3.5 flex items-center justify-between">
+        <div class="flex items-center gap-2 font-bold text-sm">
+          <i data-lucide="github" class="w-5 h-5 text-blue-400"></i>
+          <span>GitHub Pages での無料公開手順</span>
+        </div>
+        <button id="btnCloseModal" class="text-slate-400 hover:text-white">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+      <div class="p-5 text-xs text-slate-700 space-y-3 leading-relaxed">
+        <p class="font-medium text-slate-900">このWebアプリはHTML・CSS・JavaScriptの3ファイル構成です。3ファイルを同じフォルダ構成でGitHubリポジトリに配置すれば公開できます。</p>
+        <ol class="list-decimal list-inside space-y-2 bg-slate-50 p-3.5 rounded-lg border border-slate-200">
+          <li>GitHub で新規リポジトリ（例: <code class="font-mono text-slate-900">pdf-word-editor</code>）を作成します。</li>
+          <li><code class="font-mono">word_pdf_github_pages.html</code>、<code class="font-mono">css/app.css</code>、<code class="font-mono">js/app.js</code> を配置します（トップページとして公開する場合はHTMLを <code class="font-mono">index.html</code> にする必要があります）。</li>
+          <li>リポジトリの <strong>Settings</strong> &rarr; <strong>Pages</strong> を開きます。</li>
+          <li><strong>Branch</strong> を <code class="font-mono">main</code>（または <code class="font-mono">master</code>）の <code class="font-mono">/ (root)</code> に設定して <strong>Save</strong> を押します。</li>
+          <li>数十秒待つと、<code class="font-mono text-emerald-700">https://あなたのID.github.io/pdf-word-editor/</code> で世界中どこからでも使えるPDF編集Webアプリとして公開されます！</li>
+        </ol>
+        <div class="bg-blue-50 border border-blue-200 text-blue-900 p-3 rounded-lg flex gap-2 items-start">
+          <i data-lucide="shield-check" class="w-4 h-4 text-blue-600 shrink-0 mt-0.5"></i>
+          <div>
+            <strong>セキュリティとプライバシー設計:</strong><br>
+            PDFファイルの読み込み・解析・編集・出力はブラウザ内で行い、PDF本文をアプリのサーバーへ送信しません。ただし、PDF.js等のライブラリ、フォント、CSSフレームワークは外部CDNから読み込まれます。機密文書を扱う場合は、CDN依存を自己ホスト化した構成を推奨します。
+          </div>
+        </div>
+      </div>
+      <div class="bg-slate-50 px-5 py-3 border-t border-slate-200 flex justify-end">
+        <button id="btnCloseModalBottom" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs px-4 py-1.5 rounded-md">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- APPLICATION SCRIPT -->
+  <script defer src="js/app.js"></script>
+</body>
+</html>
