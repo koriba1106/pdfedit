@@ -1,7 +1,7 @@
 // Configure optional external libraries. The PDF workflow is unavailable if PDF.js fails to load.
     const pdfLibraryAvailable = typeof pdfjsLib !== 'undefined';
     if (pdfLibraryAvailable) {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = '[https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js](https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js)';
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     }
     if (typeof lucide !== 'undefined') lucide.createIcons();
 
@@ -23,7 +23,9 @@
       selectedElement: null,
       activeEditableTarget: null,
       savedRange: null, // Preserves text selection range when interacting with toolbar inputs/selects
-      activePageIndex: 0
+      activePageIndex: 0,
+      pdfBytes: null, // 元PDFのバイト列（ページ編集・墨消し・保存で使用）
+      pdfName: ''
     };
 
     // DOM Elements
@@ -332,6 +334,7 @@
     //    Allows immediate testing of PDF layout preservation & table editing!
     // =========================================================================
     async function loadRealisticSampleDocument() {
+      if (window.PdfTools && !PdfTools.beforeDocumentReplace()) return;
       pdfLoadGeneration++;
       setStatus('サンプルのビジネス文書（御見積書・表・装飾枠）を生成しています...', true);
       if (appState.pdfDoc) {
@@ -498,6 +501,8 @@
 
       selectElement(null);
       appState.activePageIndex = 0;
+      appState.pdfBytes = null;
+      appState.pdfName = '';
       appState.pagesData = [{
         pageNumber: 1,
         width: pageWidth,
@@ -508,6 +513,7 @@
         hasSampleStamp: true
       }];
 
+      if (window.PdfTools) PdfTools.onDocumentLoaded();
       renderAllPages();
       setStatus('サンプル御見積書を読み込みました — 全文を1つの文章として自由な改行や部分フォント・部分サイズ変更が可能です');
     }
@@ -518,6 +524,7 @@
     // =========================================================================
     async function handlePdfFileUpload(file) {
       if (!file) return;
+      if (window.PdfTools && !PdfTools.beforeDocumentReplace()) return;
       if (!pdfLibraryAvailable) {
         setStatus('PDF解析ライブラリを読み込めません。ネットワーク接続を確認してください。');
         return;
@@ -536,6 +543,8 @@
         setStatus(`「${file.name}」のレイアウトとテキスト構造を解析中...`, true);
         const arrayBuffer = await file.arrayBuffer();
         if (generation !== pdfLoadGeneration) return;
+        // PDF.jsはdataのバッファを転送（detach）するため、保存・ページ編集用に複製を保持する
+        const bytesCopy = arrayBuffer.slice(0);
         const signature = new TextDecoder().decode(new Uint8Array(arrayBuffer, 0, Math.min(5, arrayBuffer.byteLength)));
         if (!signature.startsWith('%PDF-')) throw new Error('PDF形式として認識できません。');
 
@@ -590,6 +599,10 @@
               const h = fontHeight * 1.2;
               const isBold = item.fontName && /bold|black|heavy|w6|w7|w8/i.test(item.fontName);
 
+              const fontStyle = textContent.styles && textContent.styles[item.fontName];
+              const genericFamily = fontStyle && fontStyle.fontFamily ? String(fontStyle.fontFamily) : '';
+              const isRotated = Math.abs(tx[1]) > fontHeight * 0.1 || Math.abs(tx[2]) > fontHeight * 0.5 || item.dir === 'ttb';
+
               rawItems.push({
                 text: item.str,
                 x: Math.round(x),
@@ -598,7 +611,9 @@
                 h: Math.round(h),
                 fontSize: Math.max(9, Math.round(fontHeight * 0.92)),
                 fontWeight: isBold ? '700' : '400',
-                color: '#0f172a'
+                color: '#0f172a',
+                fontFamily: genericFamily === 'serif' ? "'Noto Serif JP', serif" : (genericFamily === 'monospace' ? 'monospace' : "'Noto Sans JP', sans-serif"),
+                noEdit: isRotated
               });
             }
 
@@ -608,6 +623,8 @@
               height: Math.round(viewport.height),
               bgDataUrl,
               rawItems,
+              scale: renderScale,
+              rotation: viewport.rotation || 0,
               needsRasterMask: true,
               hasSampleStamp: false
             });
@@ -631,7 +648,10 @@
         candidatePdf = null;
         appState.pagesData = nextPagesData;
         appState.activePageIndex = 0;
+        appState.pdfBytes = bytesCopy;
+        appState.pdfName = file.name || 'document.pdf';
         selectElement(null);
+        if (window.PdfTools) PdfTools.onDocumentLoaded();
         renderAllPages();
         if (previousPdf) {
           try { await previousPdf.destroy(); } catch (error) { console.warn('Previous PDF cleanup:', error); }
@@ -654,6 +674,15 @@
     //    font size, weight, color, and horizontal/vertical spacing!
     // =========================================================================
     function analyzeAndReconstructLayout(rawItems, pageWidth = 794) {
+      if (appState.editMode === 'direct') {
+        // Direct mode: PDF内の各テキストを元の位置のまま編集（編集するまで元の描画をそのまま表示）
+        return {
+          textBlocks: rawItems.map((item, i) => ({ ...item, origIndex: i, directEdit: true })),
+          unifiedDocBlock: null,
+          nonTableRawRects: [],
+          tables: []
+        };
+      }
       if (appState.editMode === 'exact') {
         // Exact mode: keep every text fragment at its exact coordinate without merging
         return {
@@ -878,7 +907,9 @@
 
         // Render Individual Editable Text Blocks (in Exact mode)
         textBlocks.forEach(block => {
+          if (block.directEdit && block.noEdit) return; // 縦書き・回転文字は直接編集の対象外（元の描画のまま）
           const textEl = createEditableTextElement(block);
+          if (block.directEdit && window.PdfTools) PdfTools.setupDirectItem(textEl, block, pageIdx);
           pageEl.appendChild(textEl);
         });
 
@@ -905,8 +936,10 @@
           </div>
           <div class="text-center text-[11px] font-medium text-slate-700 group-hover:text-blue-600">ページ ${pageData.pageNumber}</div>
         `;
-        thumbItem.addEventListener('click', () => {
+        thumbItem.dataset.pageIndex = String(pageIdx);
+        thumbItem.addEventListener('click', (e) => {
           appState.activePageIndex = pageIdx;
+          if (window.PdfTools) PdfTools.onThumbClick(pageIdx, e);
           pageEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
         });
         thumbnailList.appendChild(thumbItem);
@@ -914,6 +947,7 @@
 
       applyZoom();
       if (typeof lucide !== 'undefined') lucide.createIcons();
+      if (window.PdfTools) PdfTools.afterRender();
     }
 
     // Create a Unified Word-like Document Element where ALL lines on the page are edited as a single article
@@ -1278,6 +1312,7 @@
     const modeExactBtn = document.getElementById('modeExactBtn');
 
     modeHybridBtn.addEventListener('click', () => {
+      if (window.PdfTools && !PdfTools.beforeModeSwitch()) return;
       appState.editMode = 'hybrid';
       modeHybridBtn.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-md font-medium bg-white text-blue-700 shadow-sm transition';
       modeExactBtn.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-md font-medium text-slate-600 hover:text-slate-900 transition';
@@ -1288,6 +1323,7 @@
     });
 
     modeExactBtn.addEventListener('click', () => {
+      if (window.PdfTools && !PdfTools.beforeModeSwitch()) return;
       appState.editMode = 'exact';
       modeExactBtn.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-md font-medium bg-white text-blue-700 shadow-sm transition';
       modeHybridBtn.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-md font-medium text-slate-600 hover:text-slate-900 transition';
@@ -1549,6 +1585,7 @@
 
     document.getElementById('btnDeleteSelected').addEventListener('click', () => {
       if (appState.selectedElement) {
+        if (window.PdfTools) PdfTools.onBeforeDelete();
         appState.selectedElement.remove();
         selectElement(null);
         appState.savedRange = null;
@@ -1722,7 +1759,7 @@
       selectElement(null);
 
       let wordHtml = `
-        <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='[http://www.w3.org/TR/REC-html40](http://www.w3.org/TR/REC-html40)'>
+        <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
         <head><meta charset='utf-8'><title>Exported Document</title>
         <style>
           body { font-family: 'Noto Sans JP', 'Meiryo', 'MS PGothic', sans-serif; }
@@ -1815,19 +1852,6 @@
         setStatus('PDFファイルをドロップしてください。');
       }
     });
-
-    // GitHub Pages Guide Modal
-    const githubModal = document.getElementById('githubModal');
-    document.getElementById('btnGithubGuide').addEventListener('click', () => {
-      githubModal.classList.remove('hidden');
-      githubModal.classList.add('flex');
-    });
-    const closeModal = () => {
-      githubModal.classList.add('hidden');
-      githubModal.classList.remove('flex');
-    };
-    document.getElementById('btnCloseModal').addEventListener('click', closeModal);
-    document.getElementById('btnCloseModalBottom').addEventListener('click', closeModal);
 
     // Boot with realistic Japanese Sample Document immediately so the user can test right away
     window.addEventListener('DOMContentLoaded', () => {

@@ -294,3 +294,63 @@ button, select, input {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ===== PDFツール拡張（作成・結合 / ページ編集 / 墨消し / 直接編集） ===== */
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.tool-btn:hover:not(:disabled) { background: #eff6ff; color: #1d4ed8; }
+.tool-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.tool-btn[aria-pressed="true"] { background: #fee2e2; border-color: #ef4444; color: #b91c1c; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+#thumbnailList > .thumb-selected { box-shadow: 0 0 0 3px #2563eb; border-color: #2563eb; background: #eff6ff; }
+
+/* 墨消し指定レイヤー */
+.redact-layer { position: absolute; inset: 0; z-index: 60; pointer-events: none; }
+.redact-mode .redact-layer { pointer-events: auto; cursor: crosshair; touch-action: none; }
+.redact-mark {
+  position: absolute;
+  background: rgba(220, 38, 38, 0.35);
+  border: 2px solid #dc2626;
+  pointer-events: none;
+}
+.redact-mark.ghost { background: rgba(220, 38, 38, 0.2); border-style: dashed; }
+.redact-del {
+  position: absolute; top: -10px; right: -10px; width: 20px; height: 20px; min-height: 0;
+  border-radius: 50%; background: #dc2626; color: #fff; font-size: 14px; line-height: 18px;
+  text-align: center; pointer-events: auto; cursor: pointer; border: 1px solid #fff;
+}
+
+/* 直接編集: 画像の選択枠 */
+.img-layer { position: absolute; inset: 0; z-index: 15; pointer-events: none; }
+.img-box {
+  position: absolute; box-sizing: border-box; pointer-events: auto; cursor: move;
+  border: 1px dashed #7c3aed; background-repeat: no-repeat; touch-action: none;
+}
+.img-box:hover { background-color: rgba(124, 58, 237, 0.08); }
+.img-box.selected { border: 2px solid #7c3aed; box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.25); }
+.img-box.img-box-deleted {
+  background: repeating-linear-gradient(45deg, rgba(220, 38, 38, 0.18), rgba(220, 38, 38, 0.18) 6px, transparent 6px, transparent 12px);
+  border-color: #dc2626;
+}
+.img-handle {
+  position: absolute; right: -6px; bottom: -6px; width: 12px; height: 12px;
+  background: #7c3aed; border: 1px solid #fff; cursor: nwse-resize; display: none;
+}
+.img-box.selected .img-handle { display: block; }
+
+/* 保存・画像化出力時は編集用の補助表示を隠す */
+.exporting-clean .redact-layer,
+.exporting-clean .img-layer { display: none !important; }

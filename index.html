@@ -17,6 +17,8 @@
   <!-- html2canvas & jsPDF for high-fidelity client-side PDF export -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <!-- pdf-lib: 結合・ページ編集・墨消し・元PDFを保持した保存 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
   <link rel="stylesheet" href="css/app.css">
 </head>
 <body class="h-screen flex flex-col text-slate-800">
@@ -56,14 +58,14 @@
         <span class="hidden md:inline">Word (.doc) 出力</span>
       </button>
 
-      <button id="btnExportPDF" class="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs px-3.5 py-1.5 rounded-md shadow transition">
-        <i data-lucide="download" class="w-4 h-4"></i>
-        <span>PDFとして保存</span>
+      <button id="btnSavePdfDirect" type="button" class="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-xs px-3.5 py-1.5 rounded-md shadow transition" title="元のPDFを保持したまま、編集・墨消し・ページ編集の結果を保存します">
+        <i data-lucide="save" class="w-4 h-4"></i>
+        <span>PDF保存（元PDF保持）</span>
       </button>
 
-      <button id="btnGithubGuide" class="flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs px-2.5 py-1.5 rounded-md border border-slate-700 transition" title="GitHub Pagesへの公開手順">
-        <i data-lucide="github" class="w-4 h-4"></i>
-        <span class="hidden lg:inline">GitHub公開手順</span>
+      <button id="btnExportPDF" title="画面の見たままを画像化したPDFで保存します（文字の検索・コピーは不可）" class="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs px-3.5 py-1.5 rounded-md shadow transition">
+        <i data-lucide="download" class="w-4 h-4"></i>
+        <span>PDFとして保存</span>
       </button>
     </div>
   </header>
@@ -80,6 +82,10 @@
       <button id="modeExactBtn" aria-pressed="false" class="flex items-center gap-1.5 px-2.5 py-1 rounded-md font-medium text-slate-600 hover:text-slate-900 transition" title="元のPDF配置を1ミリも崩さず個別の文字ブロックを直接書き換えます">
         <i data-lucide="layers" class="w-3.5 h-3.5"></i>
         <span>厳密レイアウト固定</span>
+      </button>
+      <button id="modeDirectBtn" aria-pressed="false" class="flex items-center gap-1.5 px-2.5 py-1 rounded-md font-medium text-slate-600 hover:text-slate-900 transition" title="PDF内の文字・画像を元の位置のまま直接編集します（元のPDFを保持して保存可能）">
+        <i data-lucide="mouse-pointer-click" class="w-3.5 h-3.5"></i>
+        <span>直接編集（文字・画像）</span>
       </button>
     </div>
 
@@ -190,6 +196,65 @@
         <i data-lucide="trash-2" class="w-4 h-4"></i>
       </button>
     </div>
+  </div>
+
+  <!-- PDFツール: 作成・結合 / ページ編集 / 墨消し / 画像編集 -->
+  <div id="pdfToolsBar" class="app-toolbar bg-slate-50 border-b border-slate-200 px-3 py-2 shrink-0 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs" role="toolbar" aria-label="PDFツール">
+    <div class="flex items-center gap-1.5" role="group" aria-label="作成・結合">
+      <span class="font-bold text-slate-500">作成・結合</span>
+      <button id="btnOpenMerge" type="button" class="tool-btn" title="新規PDFの作成、複数のPDF・画像の結合">
+        <i data-lucide="files" class="w-3.5 h-3.5 text-blue-600"></i><span>新規作成・結合…</span>
+      </button>
+    </div>
+
+    <div class="h-6 w-[1px] bg-slate-200"></div>
+
+    <div class="flex items-center gap-1 flex-wrap" role="group" aria-label="ページ編集">
+      <span class="font-bold text-slate-500 mr-1">ページ編集</span>
+      <button id="btnPageSelectAll" type="button" class="tool-btn" title="ページを全選択／解除（左のサムネイルをクリックで選択、Ctrl/Shiftで複数選択）"><span>全選択</span></button>
+      <button id="btnPageRotL" type="button" class="tool-btn" title="選択ページを左に90度回転" aria-label="左に回転"><i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i></button>
+      <button id="btnPageRotR" type="button" class="tool-btn" title="選択ページを右に90度回転" aria-label="右に回転"><i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i></button>
+      <button id="btnPageUp" type="button" class="tool-btn" title="選択ページを前へ移動" aria-label="前へ移動"><i data-lucide="arrow-up" class="w-3.5 h-3.5"></i></button>
+      <button id="btnPageDown" type="button" class="tool-btn" title="選択ページを後ろへ移動" aria-label="後ろへ移動"><i data-lucide="arrow-down" class="w-3.5 h-3.5"></i></button>
+      <button id="btnPageDuplicate" type="button" class="tool-btn" title="選択ページを複製"><i data-lucide="copy" class="w-3.5 h-3.5"></i><span>複製</span></button>
+      <button id="btnPageInsertBlank" type="button" class="tool-btn" title="選択ページの後ろに空白ページを挿入"><i data-lucide="file-plus" class="w-3.5 h-3.5"></i><span>空白挿入</span></button>
+      <button id="btnPageExtract" type="button" class="tool-btn" title="選択ページを別のPDFとして保存（未選択時は範囲を入力）"><i data-lucide="file-output" class="w-3.5 h-3.5"></i><span>抽出保存</span></button>
+      <button id="btnPageDelete" type="button" class="tool-btn" title="選択ページを削除"><i data-lucide="trash-2" class="w-3.5 h-3.5 text-red-600"></i><span>削除</span></button>
+    </div>
+
+    <div class="h-6 w-[1px] bg-slate-200"></div>
+
+    <div class="flex items-center gap-1 flex-wrap" role="group" aria-label="墨消し">
+      <span class="font-bold text-slate-500 mr-1">墨消し</span>
+      <button id="btnRedactMode" type="button" aria-pressed="false" class="tool-btn" title="ページ上をドラッグして墨消し範囲を指定"><i data-lucide="eraser" class="w-3.5 h-3.5"></i><span>範囲指定</span></button>
+      <input id="redactQuery" type="text" maxlength="200" placeholder="検索語で一括指定" aria-label="墨消しする検索語" class="border border-slate-300 rounded px-2 py-1 w-32">
+      <select id="redactPreset" aria-label="墨消しパターン" class="border border-slate-300 rounded px-1 py-1 bg-white">
+        <option value="">パターンなし</option>
+        <option value="email">メールアドレス</option>
+        <option value="phone">電話番号</option>
+        <option value="digits12">12桁の数字</option>
+      </select>
+      <button id="btnRedactSearch" type="button" class="tool-btn" title="検索語・パターンに一致する箇所を墨消し範囲に追加"><i data-lucide="search" class="w-3.5 h-3.5"></i><span>検索して指定</span></button>
+      <span id="redactCount" class="text-slate-500 w-10" aria-live="polite">0 件</span>
+      <button id="btnRedactApply" type="button" class="tool-btn" title="指定範囲を黒塗りし、該当ページを画像化して元の文字を除去します"><i data-lucide="check" class="w-3.5 h-3.5 text-red-600"></i><span>墨消しを適用</span></button>
+      <button id="btnRedactClear" type="button" class="tool-btn" title="墨消しの指定をすべて解除"><span>解除</span></button>
+    </div>
+
+    <div class="h-6 w-[1px] bg-slate-200"></div>
+
+    <div class="flex items-center gap-1 flex-wrap" role="group" aria-label="画像編集">
+      <span class="font-bold text-slate-500 mr-1">画像編集</span>
+      <button id="btnImgReplace" type="button" class="tool-btn" title="選択中の画像を別の画像に差し替え（直接編集モード）"><i data-lucide="image" class="w-3.5 h-3.5"></i><span>差し替え</span></button>
+      <button id="btnImgDelete" type="button" class="tool-btn" title="選択中の画像を削除（直接編集モード）"><i data-lucide="trash-2" class="w-3.5 h-3.5 text-red-600"></i><span>削除</span></button>
+      <button id="btnImgReset" type="button" class="tool-btn" title="選択中の画像の編集を元に戻す"><span>元に戻す</span></button>
+      <input id="imgReplaceInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden">
+      <label class="flex items-center gap-1.5 cursor-pointer text-slate-600 ml-1" title="保存時、編集したページを画像化して元の文字データを完全に除去します（機密情報の修正向け。文字検索は不可）">
+        <input type="checkbox" id="chkImageizeEdited" class="rounded text-blue-600 focus:ring-0">
+        <span>保存時に編集ページを画像化</span>
+      </label>
+    </div>
+
+    <span id="toolHint" class="text-amber-700 w-full" aria-live="polite"></span>
   </div>
 
   <!-- MAIN WORKSPACE AREA -->
@@ -350,42 +415,47 @@
     </div>
   </footer>
 
-  <!-- GITHUB PAGES DEPLOYMENT GUIDE MODAL -->
-  <div id="githubModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
-    <div class="bg-white rounded-xl max-w-lg w-full shadow-2xl border border-slate-200 overflow-hidden">
+  <!-- 新規作成・結合ダイアログ -->
+  <div id="mergeModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="mergeModalTitle">
+    <div class="bg-white rounded-xl max-w-xl w-full shadow-2xl border border-slate-200 overflow-hidden max-h-[90vh] flex flex-col">
       <div class="bg-slate-900 text-white px-5 py-3.5 flex items-center justify-between">
         <div class="flex items-center gap-2 font-bold text-sm">
-          <i data-lucide="github" class="w-5 h-5 text-blue-400"></i>
-          <span>GitHub Pages での無料公開手順</span>
+          <i data-lucide="files" class="w-5 h-5 text-blue-400"></i>
+          <span id="mergeModalTitle">PDFの新規作成・結合</span>
         </div>
-        <button id="btnCloseModal" class="text-slate-400 hover:text-white">
+        <button id="btnCloseMerge" type="button" class="text-slate-400 hover:text-white" aria-label="閉じる">
           <i data-lucide="x" class="w-5 h-5"></i>
         </button>
       </div>
-      <div class="p-5 text-xs text-slate-700 space-y-3 leading-relaxed">
-        <p class="font-medium text-slate-900">このWebアプリはHTML・CSS・JavaScriptの3ファイル構成です。3ファイルを同じフォルダ構成でGitHubリポジトリに配置すれば公開できます。</p>
-        <ol class="list-decimal list-inside space-y-2 bg-slate-50 p-3.5 rounded-lg border border-slate-200">
-          <li>GitHub で新規リポジトリ（例: <code class="font-mono text-slate-900">pdf-word-editor</code>）を作成します。</li>
-          <li><code class="font-mono">word_pdf_github_pages.html</code>、<code class="font-mono">css/app.css</code>、<code class="font-mono">js/app.js</code> を配置します（トップページとして公開する場合はHTMLを <code class="font-mono">index.html</code> にする必要があります）。</li>
-          <li>リポジトリの <strong>Settings</strong> &rarr; <strong>Pages</strong> を開きます。</li>
-          <li><strong>Branch</strong> を <code class="font-mono">main</code>（または <code class="font-mono">master</code>）の <code class="font-mono">/ (root)</code> に設定して <strong>Save</strong> を押します。</li>
-          <li>数十秒待つと、<code class="font-mono text-emerald-700">https://あなたのID.github.io/pdf-word-editor/</code> で世界中どこからでも使えるPDF編集Webアプリとして公開されます！</li>
-        </ol>
-        <div class="bg-blue-50 border border-blue-200 text-blue-900 p-3 rounded-lg flex gap-2 items-start">
-          <i data-lucide="shield-check" class="w-4 h-4 text-blue-600 shrink-0 mt-0.5"></i>
-          <div>
-            <strong>セキュリティとプライバシー設計:</strong><br>
-            PDFファイルの読み込み・解析・編集・出力はブラウザ内で行い、PDF本文をアプリのサーバーへ送信しません。ただし、PDF.js等のライブラリ、フォント、CSSフレームワークは外部CDNから読み込まれます。機密文書を扱う場合は、CDN依存を自己ホスト化した構成を推奨します。
+      <div class="p-5 text-xs text-slate-700 space-y-4 overflow-y-auto">
+        <section aria-labelledby="mergeH">
+          <h2 id="mergeH" class="font-bold text-slate-900 mb-2">結合（PDF・PNG・JPEGを1つのPDFに）</h2>
+          <label for="mergeFileInput" class="inline-flex cursor-pointer tool-btn"><i data-lucide="folder-open" class="w-3.5 h-3.5 text-blue-600"></i><span>ファイルを追加…</span></label>
+          <input type="file" id="mergeFileInput" multiple accept="application/pdf,.pdf,image/png,image/jpeg,.png,.jpg,.jpeg" class="sr-only">
+          <label class="inline-flex items-center gap-1.5 ml-3 cursor-pointer"><input type="checkbox" id="chkIncludeCurrent" checked class="rounded text-blue-600"><span>現在開いているPDFを先頭に含める</span></label>
+          <ul id="mergeFileList" class="mt-2 border border-slate-200 rounded-lg px-3 max-h-56 overflow-y-auto"></ul>
+          <p id="mergeMessage" class="text-red-600 mt-1" role="alert"></p>
+          <div class="mt-2 flex justify-end"><button id="btnRunMerge" type="button" class="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold text-xs px-4 py-1.5 rounded-md">結合して開く</button></div>
+        </section>
+        <section class="border-t border-slate-200 pt-3" aria-labelledby="newH">
+          <h2 id="newH" class="font-bold text-slate-900 mb-2">新規作成（空白のPDF）</h2>
+          <div class="flex flex-wrap items-center gap-2">
+            <select id="newPaperSize" aria-label="用紙サイズ" class="border border-slate-300 rounded px-2 py-1 bg-white"><option value="a4">A4</option><option value="letter">Letter</option></select>
+            <select id="newOrientation" aria-label="向き" class="border border-slate-300 rounded px-2 py-1 bg-white"><option value="portrait">縦</option><option value="landscape">横</option></select>
+            <label class="flex items-center gap-1">ページ数 <input id="newPageCount" type="number" min="1" max="50" value="1" class="w-16 border border-slate-300 rounded px-2 py-1"></label>
+            <button id="btnCreateBlank" type="button" class="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white font-semibold text-xs px-4 py-1.5 rounded-md">作成して開く</button>
           </div>
-        </div>
+        </section>
+        <p class="text-slate-500">ファイルは端末内で処理され、外部へ送信されません。パスワード保護されたPDFは結合できません。</p>
       </div>
       <div class="bg-slate-50 px-5 py-3 border-t border-slate-200 flex justify-end">
-        <button id="btnCloseModalBottom" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs px-4 py-1.5 rounded-md">閉じる</button>
+        <button id="btnCloseMergeBottom" type="button" class="bg-slate-200 hover:bg-slate-300 text-slate-800 font-semibold text-xs px-4 py-1.5 rounded-md">閉じる</button>
       </div>
     </div>
   </div>
 
   <!-- APPLICATION SCRIPT -->
   <script defer src="js/app.js"></script>
+  <script defer src="js/pdf-tools.js"></script>
 </body>
 </html>
